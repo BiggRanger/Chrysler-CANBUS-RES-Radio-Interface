@@ -52,13 +52,13 @@ uint8_t lightsDashIntensity = 0xC8;       //initial state = max illimunation
 
 void setup()
 {
-  pinMode(9, OUTPUT);         //this is here to pull pin 9 (CS) high for the test board with 2 CAN modules.
-  digitalWrite(9, HIGH);      //set high or the second MCP2515 thinks it's being talked to and SPI won't read anything.
+  //pinMode(9, OUTPUT);         //this is here to pull pin 9 (CS) high for the test board with 2 CAN modules.
+  //digitalWrite(9, HIGH);      //set high or the second MCP2515 thinks it's being talked to and SPI won't read anything.
   
   Serial.begin(1000000);
 
-  CAN.setPins(10, 2);
-  CAN.setClockFrequency(8E6);
+  //CAN.setPins(10, 2);
+  //CAN.setClockFrequency(8E6);
  
   if (!CAN.begin(83E3))      //start the CAN bus at 83.333 kbps
   {
