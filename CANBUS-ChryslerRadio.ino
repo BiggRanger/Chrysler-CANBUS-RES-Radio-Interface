@@ -44,21 +44,33 @@
  */
 
 
-uint8_t timeH = 0, timeM = 0, timeS = 0;  //The radio does not keep time, it only sets and displays time.
+volatile uint8_t timeH = 0, timeM = 0, timeS = 0;  //The radio does not keep time, it only sets and displays time.
 
 uint8_t keyState = 0x41;                  //initial state = key-in, accessory on
 uint8_t lightsDriving = 0x02;             //initial state = dash illuminated
 uint8_t lightsDashIntensity = 0xC8;       //initial state = max illimunation
 
+String SerialRXBuffer = "";
+bool SerialRXSpecial = false;
+
 void setup()
 {
-  //pinMode(9, OUTPUT);         //this is here to pull pin 9 (CS) high for the test board with 2 CAN modules.
-  //digitalWrite(9, HIGH);      //set high or the second MCP2515 thinks it's being talked to and SPI won't read anything.
+  pinMode(9, OUTPUT);         //this is here to pull pin 9 (CS) high for the test board with 2 CAN modules.
+  digitalWrite(9, HIGH);      //set high or the second MCP2515 thinks it's being talked to and SPI won't read anything.
+
+  noInterrupts();
+  TCCR1A = 0;
+  TCCR1B = 0;
+  OCR1A = 62500;            // compare match register 16MHz/256
+  TCCR1B |= (1 << WGM12);   // CTC mode
+  TCCR1B |= (1 << CS12);    // 256 prescaler 
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+  interrupts();
   
   Serial.begin(1000000);
 
-  //CAN.setPins(10, 2);
-  //CAN.setClockFrequency(8E6);
+  CAN.setPins(10, 2);
+  CAN.setClockFrequency(8E6);
  
   if (!CAN.begin(83E3))      //start the CAN bus at 83.333 kbps
   {
@@ -73,9 +85,26 @@ void setup()
   Serial.println("FCA Radio Tool");
 }
 
+ISR(TIMER1_COMPA_vect)
+{
+  timeS++;
+  if (timeS > 59)
+  {
+    timeS = 0;
+    timeM++;
+  }
+  if (timeM > 59)
+  {
+    timeM = 0;
+    timeH++;
+  }
+  if (timeH > 23)
+    timeH = 0;
+}
+
 void loop()
 {
-  for (uint16_t y = 0; y < 970; y++)
+  for (uint16_t y = 0; y < 900; y++)  //~900mS delay while checking serial.
   {
     delay(1);
     checkSerial();
@@ -92,20 +121,6 @@ void loop()
     canSend(0x3EC, timeH, timeM, timeS); delay(5);                                            //clock data, if this isn't here radio returns "no clock"
     canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);                             //steering wheel button states from cluster
   }
-  
-  timeS++;
-  if (timeS > 59)
-  {
-    timeS = 0;
-    timeM++;
-  }
-  if (timeM > 59)
-  {
-    timeM = 0;
-    timeH++;
-  }
-  if (timeH > 23)
-    timeH = 0;
 }
 
 void onCANReceive(int packetSize) 
@@ -180,7 +195,30 @@ void onCANReceive(int packetSize)
         Serial.print("0x0F0 B[0]= "); Serial.print(parameters[0], HEX); Serial.print(" SetTime - H: "); Serial.print(timeH); Serial.print(" M: "); Serial.print(timeM); Serial.print(" S: "); Serial.println(timeS); 
       }
       break;
-  
+
+    case 0x0EC:
+      //this is part of the HVAC contorl panel
+      Serial.print("0x0EC Settings - HVAC A/C-Defost: "); 
+      Serial.print("A/C 1: ");
+      Serial.print(0x1 & parameters[0]);
+      Serial.print(" A/C 2: ");
+      Serial.print((0x40 & parameters[0]) >> 6);
+      Serial.print(" Rear Defrost: ");
+      Serial.println((0x80 & parameters[0]) >> 7);
+      break;
+     
+    case 0x1F8:
+      //this is part of the HVAC contorl panel
+      Serial.print("0x1F8 Settings - HVAC rear Wiper: Speed ");
+      Serial.print(0x0F & parameters[0]);
+      Serial.print(" Washer: ");
+      Serial.println((0x10 & parameters[0]) >> 4);
+      break;
+
+    case 0x411:
+    case 0x416:
+      break;
+      
     default:
       //Output information from unexpected packets
       Serial.print("0x");
@@ -200,84 +238,106 @@ void checkSerial()
   if (Serial.available())
   {
     char RX = Serial.read();
-
-    if ( RX == 'I' || RX == 'i' ) //power on
+    if (!SerialRXSpecial)
     {
-      keyState = 0x41;
-      canSend(0x000, keyState, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      if ( RX == 'I' || RX == 'i' ) //power on
+      {
+        keyState = 0x41;
+        canSend(0x000, keyState, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if ( RX == 'O' || RX == 'o' ) //power off
+      {
+        keyState = 0x00;
+        canSend(0x000, keyState, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+  
+      if ( RX == 'L' || RX == 'l' ) //lights
+      {
+        lightsDriving = 0x03;
+        lightsDashIntensity = 0x00;      
+        canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+  
+      if ( RX == 'K' || RX == 'k' ) //dash lights
+      {
+        lightsDriving = 0x02;
+        lightsDashIntensity = 0xC8;      
+        canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+  
+      if ( RX == '>') //dash light intensity up
+      {
+        lightsDashIntensity += 5;
+        if ( lightsDashIntensity > 0xC8 )
+          lightsDashIntensity = 0xC8;
+        canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+  
+      if (RX == '<') //dash light intensity down
+      {
+        lightsDashIntensity -= 5;
+        if ( lightsDashIntensity < 0x10 )
+          lightsDashIntensity = 0x10;
+        canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+  
+      if (RX == '+')  //volume up
+      {
+        canSend(0x3A0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
+        canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if (RX == '-')  //volume down
+      {
+        canSend(0x3A0, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
+        canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if ( RX == 'U' || RX == 'u' ) //scan up
+      {
+        canSend(0x3A0, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
+        canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if ( RX == 'D' || RX == 'd' ) //scan down
+      {
+        canSend(0x3A0, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
+        canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if ( RX == 'B' || RX == 'b' ) //switch bands
+      {
+        canSend(0x3A0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
+        canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if ( RX == 'P' || RX == 'p' ) //preset increase
+      {
+        canSend(0x3A0, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
+        canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if ( RX == 'R' || RX == 'r' ) //preset decrease
+      {
+        canSend(0x3A0, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
+        canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      }
+      if ( RX == 'T' || RX == 't' ) //set time
+      {
+        SerialRXBuffer = RX;
+        SerialRXSpecial = true;
+      }
     }
-    if ( RX == 'O' || RX == 'o' ) //power off
+    else
     {
-      keyState = 0x00;
-      canSend(0x000, keyState, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-
-    if ( RX == 'L' || RX == 'l' ) //lights
-    {
-      lightsDriving = 0x03;
-      lightsDashIntensity = 0x00;      
-      canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-
-    if ( RX == 'K' || RX == 'k' ) //dash lights
-    {
-      lightsDriving = 0x02;
-      lightsDashIntensity = 0xC8;      
-      canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-
-    if ( RX == '>') //dash light intensity up
-    {
-      lightsDashIntensity += 5;
-      if ( lightsDashIntensity > 0xC8 )
-        lightsDashIntensity = 0xC8;
-      canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-
-    if (RX == '<') //dash light intensity down
-    {
-      lightsDashIntensity -= 5;
-      if ( lightsDashIntensity < 0x10 )
-        lightsDashIntensity = 0x10;
-      canSend(0x210, lightsDriving, lightsDashIntensity, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-
-
-    
-    if (RX == '+')  //volume up
-    {
-      canSend(0x3A0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
-      canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-    if (RX == '-')  //volume down
-    {
-      canSend(0x3A0, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
-      canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-    if ( RX == 'U' || RX == 'u' ) //scan up
-    {
-      canSend(0x3A0, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
-      canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-    if ( RX == 'D' || RX == 'd' ) //scan down
-    {
-      canSend(0x3A0, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
-      canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-    if ( RX == 'B' || RX == 'b' ) //switch bands
-    {
-      canSend(0x3A0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
-      canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-    if ( RX == 'P' || RX == 'p' ) //preset increase
-    {
-      canSend(0x3A0, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
-      canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
-    }
-    if ( RX == 'R' || RX == 'r' ) //preset decrease
-    {
-      canSend(0x3A0, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00); delay(50);
-      canSend(0x3A0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00); delay(5);
+      SerialRXBuffer += RX;
+      if (SerialRXBuffer.length() >= 5)
+      {
+        String tempVal = "";
+        char tempArray[8];
+        tempVal = SerialRXBuffer.substring(1,3);
+        tempVal.toCharArray(tempArray,sizeof(tempArray));
+        timeH = strtol(tempArray, 0, 0);
+        tempVal = SerialRXBuffer.substring(3,5);
+        tempVal.toCharArray(tempArray,sizeof(tempArray));
+        timeM = strtol(tempArray, 0, 0);
+        SerialRXBuffer = "";
+        SerialRXSpecial = false;
+      }
     }
   }
 }
