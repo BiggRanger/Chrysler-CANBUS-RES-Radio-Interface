@@ -55,9 +55,6 @@ bool SerialRXSpecial = false;
 
 void setup()
 {
-  pinMode(9, OUTPUT);         //this is here to pull pin 9 (CS) high for the test board with 2 CAN modules.
-  digitalWrite(9, HIGH);      //set high or the second MCP2515 thinks it's being talked to and SPI won't read anything.
-
   noInterrupts();
   TCCR1A = 0;
   TCCR1B = 0;
@@ -69,8 +66,12 @@ void setup()
   
   Serial.begin(1000000);
 
+  //these settings are dependant on the CAN module being used. CS could be pin 9 or 10
+  //the clockk can be 8 or 16 MHz
   CAN.setPins(10, 2);
+  //CAN.setPins(9, 2);
   CAN.setClockFrequency(8E6);
+  //CAN.setClockFrequency(16E6);
  
   if (!CAN.begin(83E3))      //start the CAN bus at 83.333 kbps
   {
